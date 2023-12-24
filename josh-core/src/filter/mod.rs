@@ -124,6 +124,7 @@ enum Op {
     Prefix(std::path::PathBuf),
     Subdir(std::path::PathBuf),
     Workspace(std::path::PathBuf),
+    Include(std::path::PathBuf),
 
     Glob(String),
 
@@ -294,6 +295,9 @@ fn spec2(op: &Op) -> String {
                 })
                 .collect::<Vec<_>>();
             format!(":replace({})", v.join(","))
+        }
+        Op::Include(path) => {
+            format!(":include={}", path.to_string_lossy())
         }
 
         Op::Chain(a, b) => match (to_op(*a), to_op(*b)) {
@@ -632,6 +636,55 @@ fn apply_to_commit2(
             ))
             .transpose();
         }
+        Op::Include(include_path) => {
+            let normal_parents = commit
+                .parent_ids()
+                .map(|parent| transaction.get(filter, parent))
+                .collect::<Option<Vec<git2::Oid>>>();
+
+            let normal_parents = some_or!(normal_parents, { return Ok(None) });
+
+            let cw = parse::parse(&tree::get_blob(repo, &commit.tree()?, &include_path))
+                .unwrap_or(to_filter(Op::Empty));
+
+            let extra_parents = commit
+                .parents()
+                .map(|parent| {
+                    rs_tracing::trace_scoped!("parent", "id": parent.id().to_string());
+                    let pcw = parse::parse(&tree::get_blob(
+                        repo,
+                        &parent.tree().unwrap_or(tree::empty(repo)),
+                        &include_path,
+                    ))
+                    .unwrap_or(to_filter(Op::Empty));
+
+                    apply_to_commit2(
+                        &to_op(opt::optimize(to_filter(Op::Subtract(cw, pcw)))),
+                        &parent,
+                        transaction,
+                    )
+                })
+                .collect::<JoshResult<Option<Vec<_>>>>()?;
+
+            let extra_parents = some_or!(extra_parents, { return Ok(None) });
+
+            let filtered_parent_ids = normal_parents
+                .into_iter()
+                .chain(extra_parents.into_iter())
+                .collect();
+
+            let filtered_tree = apply(transaction, filter, commit.tree()?)?;
+
+            return Some(history::create_filtered_commit(
+                commit,
+                filtered_parent_ids,
+                filtered_tree,
+                transaction,
+                filter,
+                None,None
+            ))
+            .transpose();
+        }
         Op::Fold => {
             let filtered_parent_ids = commit
                 .parents()
@@ -785,6 +838,15 @@ fn apply2<'a>(
             )
         }
 
+        Op::Include(path) => {
+            let file = to_filter(Op::File(path.to_owned()));
+            if let Ok(cw) = parse::parse(&tree::get_blob(repo, &tree, &path)) {
+                apply(transaction, compose(file, cw), tree)
+            } else {
+                apply(transaction, file, tree)
+            }
+        }
+
         Op::Compose(filters) => {
             let filtered: Vec<_> = filters
                 .iter()
@@ -885,6 +947,70 @@ fn unapply_workspace<'a>(
             )?)?;
 
             return Ok(Some(result));
+        },        Op::Include(path) => {
+            let root = to_filter(Op::File(path.to_owned()));
+            let mapped = &tree::get_blob(transaction.repo(), &tree, path);
+            let parsed = parse(mapped)?;
+
+            let mut blob = String::new();
+            if let Ok(c) = get_comments(mapped) {
+                if !c.is_empty() {
+                    blob = c;
+                }
+            }
+            let blob = &format!("{}{}\n", &blob, pretty(parsed, 0));
+
+            // TODO: is this still necessary?
+            // Remove filters file from the tree to prevent it from being parsed again
+            // further down the callstack leading to endless recursion.
+            let tree = tree::insert(
+                transaction.repo(),
+                &tree,
+                path,
+                git2::Oid::zero(),
+                0o0100644,
+            )?;
+
+            // Insert a dummy file to prevent the directory from dissappearing through becoming
+            // empty.
+            let tree = tree::insert(
+                transaction.repo(),
+                &tree,
+                Path::new("DUMMY-df97a89d-b11f-4e1c-8400-345f895f0d40"),
+                transaction.repo().blob("".as_bytes())?,
+                0o0100644,
+            )?;
+
+            let r = unapply(
+                transaction,
+                compose(root, parsed),
+                tree.clone(),
+                parent_tree,
+            )?;
+
+            // Remove the dummy file inserted above
+            let r = tree::insert(
+                transaction.repo(),
+                &r,
+                &path.join("DUMMY-df97a89d-b11f-4e1c-8400-345f895f0d40"),
+                git2::Oid::zero(),
+                0o0100644,
+            )?;
+
+            // Put the filters file back to it's target location.
+            let r = if !mapped.is_empty() {
+                tree::insert(
+                    transaction.repo(),
+                    &r,
+                    &path,
+                    transaction.repo().blob(blob.as_bytes())?,
+                    0o0100644, // Should this handle filemode?
+                )?
+            } else {
+                r
+            };
+
+            return Ok(Some(r));
         }
         _ => Ok(None),
     };
@@ -950,6 +1076,16 @@ pub fn compute_warnings<'a>(
             filter = res;
         } else {
             warnings.push("couldn't parse workspace\n".to_string());
+            return warnings;
+        }
+    }
+
+    if let Op::Include(path) = to_op(filter) {
+        let full_filter = &tree::get_blob(transaction.repo(), &tree, &path);
+        if let Ok(res) = parse(full_filter) {
+            filter = res;
+        } else {
+            warnings.push("couldn't parse include file\n".to_string());
             return warnings;
         }
     }
