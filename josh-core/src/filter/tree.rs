@@ -92,79 +92,6 @@ pub fn regex_replace<'a>(
     Ok(result)
 }
 
-pub fn map_blobs<'a>(
-    input: git2::Oid,
-    fun: &mut impl FnMut(Vec<u8>) -> super::JoshResult<Vec<u8>>,
-    transaction: &'a cache::Transaction,
-) -> super::JoshResult<git2::Tree<'a>> {
-    let repo = transaction.repo();
-
-    let tree = repo.find_tree(input)?;
-    let mut result = tree::empty(repo);
-
-    for entry in tree.iter() {
-        let name = entry.name().ok_or(super::josh_error("no name"))?;
-        if entry.kind() == Some(git2::ObjectType::Blob) {
-            let file_contents = get_blob_bytes(repo, &tree, std::path::Path::new(&name))?;
-            let replaced = fun(file_contents)?;
-
-            result = replace_child(
-                repo,
-                std::path::Path::new(name),
-                repo.blob(&replaced)?,
-                entry.filemode(),
-                &result,
-            )?;
-        }
-
-        if entry.kind() == Some(git2::ObjectType::Tree) {
-            let s = map_blobs(entry.id(), fun, transaction)?.id();
-
-            if s != tree::empty_id() {
-                result = replace_child(repo, std::path::Path::new(name), s, 0o0040000, &result)?;
-            }
-        }
-    }
-    Ok(result)
-}
-
-pub fn map_blobs_str<'a>(
-    input: git2::Oid,
-    fun: &mut impl FnMut(String) -> super::JoshResult<String>,
-    transaction: &'a cache::Transaction,
-) -> super::JoshResult<git2::Tree<'a>> {
-    let repo = transaction.repo();
-
-    let tree = repo.find_tree(input)?;
-    let mut result = tree::empty(repo);
-
-    for entry in tree.iter() {
-        let name = entry.name().ok_or(super::josh_error("no name"))?;
-        if entry.kind() == Some(git2::ObjectType::Blob) {
-            let file_contents = get_blob(repo, &tree, std::path::Path::new(&name));
-            let replaced = fun(file_contents)?;
-
-            result = replace_child(
-                repo,
-                std::path::Path::new(name),
-                repo.blob(replaced.as_bytes())?,
-                entry.filemode(),
-                &result,
-            )?;
-        }
-
-        if entry.kind() == Some(git2::ObjectType::Tree) {
-            let s = map_blobs_str(entry.id(), fun, transaction)?.id();
-
-            if s != tree::empty_id() {
-                result = replace_child(repo, std::path::Path::new(name), s, 0o0040000, &result)?;
-            }
-        }
-    }
-    Ok(result)
-}
-
-
 pub fn remove_pred<'a>(
     transaction: &'a cache::Transaction,
     root: &str,
@@ -1057,18 +984,6 @@ pub fn get_blob(repo: &git2::Repository, tree: &git2::Tree, path: &Path) -> Stri
     });
 
     content.to_owned()
-}
-
-pub fn get_blob_bytes(
-    repo: &git2::Repository,
-    tree: &git2::Tree,
-    path: &Path,
-) -> JoshResult<Vec<u8>> {
-    let entry_oid = tree.get_path(path).map(|x| x.id())?;
-
-    let blob = repo.find_blob(entry_oid)?;
-
-    return Ok(blob.content().to_owned());
 }
 
 pub fn empty_id() -> git2::Oid {
