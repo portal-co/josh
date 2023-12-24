@@ -1,4 +1,5 @@
 use super::*;
+use hex::FromHex;
 use indoc::{formatdoc, indoc};
 use itertools::Itertools;
 
@@ -39,6 +40,8 @@ fn make_op(args: &[&str]) -> JoshResult<Op> {
         ["INDEX"] => Ok(Op::Index),
         ["INVERT"] => Ok(Op::Invert),
         ["FOLD"] => Ok(Op::Fold),
+        ["encrypt",s] => Ok(Op::Encrypt(Key::from_slice(&<[u8;32] as FromHex>::from_hex(s)?).clone())),
+        ["decrypt",s] => Ok(Op::Decrypt(Key::from_slice(&<[u8;32] as FromHex>::from_hex(s)?).clone())),
         _ => Err(josh_error(
             formatdoc!(
                 r#"
