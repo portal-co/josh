@@ -1,9 +1,9 @@
 use super::*;
+use chacha20poly1305::aead::Aead;
+use chacha20poly1305::aead::Payload;
 use chacha20poly1305::ChaCha20Poly1305;
 use chacha20poly1305::Key;
 use chacha20poly1305::KeyInit;
-use chacha20poly1305::aead::Aead;
-use chacha20poly1305::aead::Payload;
 use hex::ToHex;
 use pest::Parser;
 use std::path::Path;
@@ -331,8 +331,8 @@ fn spec2(op: &Op) -> String {
         Op::Author(author, email) => {
             format!(":author={};{}", parse::quote(author), parse::quote(email))
         }
-        Op::Encrypt(k) => format!(":encrypt(\"{}\")",k.encode_hex::<String>()),
-        Op::Decrypt(k) => format!(":decrypt(\"{}\")",k.encode_hex::<String>()),
+        Op::Encrypt(k) => format!(":encrypt(\"{}\")", k.encode_hex::<String>()),
+        Op::Decrypt(k) => format!(":decrypt(\"{}\")", k.encode_hex::<String>()),
     }
 }
 
@@ -681,7 +681,8 @@ fn apply_to_commit2(
                 filtered_tree,
                 transaction,
                 filter,
-                None,None
+                None,
+                None,
             ))
             .transpose();
         }
@@ -860,11 +861,27 @@ fn apply2<'a>(
             return apply(transaction, *b, apply(transaction, *a, tree)?);
         }
         Op::Encrypt(k) => {
-            return tree::map_blobs(tree.id(),&mut |a|ChaCha20Poly1305::new(&k).encrypt(&Default::default(), Payload::from(&a as &[u8])).map_err(|_|JoshError("encryption or decryption failed".to_owned())),transaction);
-        },
+            return tree::map_blobs(
+                tree.id(),
+                &mut |a| {
+                    ChaCha20Poly1305::new(&k)
+                        .encrypt(&Default::default(), Payload::from(&a as &[u8]))
+                        .map_err(|_| JoshError("encryption or decryption failed".to_owned()))
+                },
+                transaction,
+            );
+        }
         Op::Decrypt(k) => {
-            return tree::map_blobs(tree.id(),&mut |a|ChaCha20Poly1305::new(&k).decrypt(&Default::default(), Payload::from(&a as &[u8])).map_err(|_|JoshError("encryption or decryption failed".to_owned())),transaction);
-        },
+            return tree::map_blobs(
+                tree.id(),
+                &mut |a| {
+                    ChaCha20Poly1305::new(&k)
+                        .decrypt(&Default::default(), Payload::from(&a as &[u8]))
+                        .map_err(|_| JoshError("encryption or decryption failed".to_owned()))
+                },
+                transaction,
+            );
+        }
     }
 }
 
@@ -947,7 +964,8 @@ fn unapply_workspace<'a>(
             )?)?;
 
             return Ok(Some(result));
-        },        Op::Include(path) => {
+        }
+        Op::Include(path) => {
             let root = to_filter(Op::File(path.to_owned()));
             let mapped = &tree::get_blob(transaction.repo(), &tree, path);
             let parsed = parse(mapped)?;
